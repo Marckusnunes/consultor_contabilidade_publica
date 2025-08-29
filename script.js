@@ -1,5 +1,5 @@
 // Passo 1: Insira sua chave de API do Google AI Studio aqui
-const API_KEY = AIzaSyCAfoNnBVEMIeSO63-f7tz8NntAeX0TNR0;
+const API_KEY = 'AIzaSyCAfoNnBVEMIeSO63-f7tz8NntAeX0TNR0';
 
 // Passo 2: Suas instruções detalhadas para o "Gem"
 const instrucoesDoGem = `
