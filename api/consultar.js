@@ -39,7 +39,6 @@ export default async function handler(req, res) {
   try {
     const { consulta } = req.body;
     
-    // As chaves agora devem estar configuradas como Variáveis de Ambiente na Vercel
     const apiKey = process.env.GEMINI_API_KEY;
     const supabaseUrl = process.env.SUPABASE_URL;
     const supabaseAnonKey = process.env.SUPABASE_ANON_KEY;
@@ -48,24 +47,25 @@ export default async function handler(req, res) {
       throw new Error("Variáveis de ambiente (Gemini ou Supabase) não estão configuradas corretamente na Vercel.");
     }
     
-    // Inicializa os clientes da IA e do Banco de Dados
     const genAI = new GoogleGenerativeAI(apiKey);
     const supabase = createClient(supabaseUrl, supabaseAnonKey);
     const embeddingModel = genAI.getGenerativeModel({ model: "embedding-001" });
     const generativeModel = genAI.getGenerativeModel({ model: "gemini-1.5-pro-latest" });
 
-    // 1. Criar o embedding (representação numérica) da pergunta do usuário
+    // 1. Criar o embedding da pergunta do usuário (COM A CORREÇÃO)
+    console.log("Criando embedding para a consulta...");
     const embeddingResult = await embeddingModel.embedContent({
-      content: consulta,
+      content: { parts: [{ text: consulta }] }, // <-- ESTA É A CORREÇÃO
       taskType: "RETRIEVAL_QUERY",
     });
     const queryEmbedding = embeddingResult.embedding.values;
 
     // 2. Buscar no Supabase pelos trechos de texto mais relevantes
+    console.log("Buscando documentos relevantes no Supabase...");
     const { data: documents, error } = await supabase.rpc('match_documents', {
       query_embedding: queryEmbedding,
-      match_threshold: 0.75, // Limiar de relevância (pode ajustar entre 0.7 e 0.8)
-      match_count: 7,       // Pega os 7 trechos mais relevantes
+      match_threshold: 0.75, 
+      match_count: 7,       
     });
 
     if (error) {
@@ -74,6 +74,7 @@ export default async function handler(req, res) {
     }
     
     const contextText = documents.map(doc => doc.content).join("\n\n---\n\n");
+    console.log("Contexto relevante encontrado.");
 
     // 3. Montar o prompt final e gerar a resposta
     const promptFinal = `
@@ -87,6 +88,7 @@ export default async function handler(req, res) {
       ${consulta}
     `;
 
+    console.log("Enviando prompt final para a IA...");
     const result = await generativeModel.generateContent(promptFinal);
     const responseText = result.response.text();
     
