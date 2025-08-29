@@ -83,7 +83,20 @@ export default async function handler(req, res) {
         const model = genAI.getGenerativeModel({ model: "gemini-1.5-pro-latest" });
 
         // Lê os arquivos de conhecimento
-        const knowledgeBase = getKnowledgeBase();
+        // const knowledgeBase = getKnowledgeBase();
+   try {
+      const { consulta } = req.body;
+    // ...
+
+    const genAI = new GoogleGenerativeAI(apiKey);
+    const model = genAI.getGenerativeModel({ model: "gemini-1.5-pro-latest" });
+
+    // const knowledgeBase = getKnowledgeBase(); // <--- COMENTE ESTA LINHA
+    const knowledgeBase = ""; // <--- ADICIONE ESTA NOVA LINHA
+
+    const promptFinal = `${instrucoesDoGem}\n\n${knowledgeBase}\n\n---CONSULTA DO USUÁRIO:\n${consulta}`;
+
+    console.log("Enviando prompt para a API do Gemini...");
 
         // Monta o prompt final
         const promptFinal = `${instrucoesDoGem}\n\n${knowledgeBase}\n\n---CONSULTA DO USUÁRIO:\n${consulta}`;
