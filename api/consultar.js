@@ -1,15 +1,13 @@
 import { GoogleGenerativeAI } from '@google/generative-ai';
-import fs from 'fs';
-import path from 'path';
-import pdf from 'pdf-parse';
+import { createClient } from '@supabase/supabase-js';
 
-// Suas instruções completas, incorporadas diretamente no código.
+// Suas instruções completas, que guiam a resposta final da IA
 const instrucoesDoGem = `
 # INSTRUÇÕES PARA O MODELO DE IA
 
 ## 1. PERSONA E ESCOPO
 1.1. Identidade: Você é um "Especialista em Contabilidade Pública". Sua finalidade é atuar como um assistente técnico, preciso e confiável para consultas sobre Contabilidade Aplicada ao Setor Público (CASP).
-1.2. Base de Conhecimento Primária: Sua base de conhecimento primária e exclusiva para a formulação de respostas são as normas, manuais e legislações que anexei a esta sessão. Responda estritamente com base nestes documentos. Se a informação não estiver nos documentos anexados, declare que não possui a base necessária para responder.
+1.2. Base de Conhecimento Primária: Sua base de conhecimento primária para a formulação de respostas são os trechos de normas, manuais e legislações fornecidos a seguir sob o título "CONTEXTO RELEVANTE". Responda estritamente com base neste contexto. Se o contexto não for suficiente para uma resposta precisa, declare que a informação não foi encontrada na base de conhecimento.
 1.3. Atuação: Você é técnico, objetivo, neutro e direto. Sua comunicação deve ser formal e precisa, evitando linguagem coloquial ou ambiguidades.
 
 ## 2. REGRAS DE OPERAÇÃO E ANÁLISE
@@ -33,44 +31,6 @@ Referências ao Final: Ao final de cada resposta, inclua uma seção intitulada 
 3.2. Terminologia: Utilize estritamente a terminologia encontrada no Plano de Contas Aplicado ao Setor Público (PCASP) e nos Manuais de Contabilidade Aplicada ao Setor Público (MCASP).
 `;
 
-// Nova função para ler os arquivos, incluindo PDFs
-const getKnowledgeBase = async () => {
-  try {
-    console.log("Iniciando leitura da base de conhecimento...");
-    const knowledgeDir = path.resolve(process.cwd(), 'knowledge');
-    const filenames = fs.readdirSync(knowledgeDir);
-    
-    let knowledgeText = "";
-
-    // Para teste, vamos ler apenas UM arquivo para não estourar a cota
-    const fileToRead = filenames.find(f => f.endsWith('.pdf') || f.endsWith('.csv'));
-    
-    if (fileToRead) {
-        console.log(`Lendo o arquivo de teste: ${fileToRead}`);
-        const filePath = path.join(knowledgeDir, fileToRead);
-        knowledgeText += `\n\n--- INÍCIO DO DOCUMENTO: ${fileToRead} ---\n`;
-        
-        if (fileToRead.endsWith('.pdf')) {
-            const dataBuffer = fs.readFileSync(filePath);
-            const data = await pdf(dataBuffer);
-            knowledgeText += data.text;
-        } else { // Para .csv e outros arquivos de texto
-            const content = fs.readFileSync(filePath, 'utf8');
-            knowledgeText += content;
-        }
-        knowledgeText += `\n--- FIM DO DOCUMENTO: ${fileToRead} ---\n`;
-    } else {
-        console.log("Nenhum arquivo PDF ou CSV encontrado para teste.");
-    }
-    
-    console.log("Leitura da base de conhecimento de teste concluída.");
-    return knowledgeText;
-  } catch (error) {
-    console.error("ERRO CRÍTICO ao ler a base de conhecimento:", error);
-    return `ERRO INTERNO: Não foi possível ler os documentos de base. Detalhe: ${error.message}`;
-  }
-};
-
 export default async function handler(req, res) {
   if (req.method !== 'POST') {
     return res.status(405).json({ error: 'Método não permitido' });
@@ -78,23 +38,56 @@ export default async function handler(req, res) {
 
   try {
     const { consulta } = req.body;
+    
+    // As chaves agora devem estar configuradas como Variáveis de Ambiente na Vercel
     const apiKey = process.env.GEMINI_API_KEY;
-    if (!apiKey) throw new Error("GEMINI_API_KEY não configurada.");
+    const supabaseUrl = process.env.SUPABASE_URL;
+    const supabaseAnonKey = process.env.SUPABASE_ANON_KEY;
 
-    const genAI = new GoogleGenerativeAI(apiKey);
-    const model = genAI.getGenerativeModel({ model: "gemini-1.5-pro-latest" });
-
-    // AGORA VAMOS LER (APENAS UM) ARQUIVO
-    const knowledgeBase = await getKnowledgeBase();
-
-    // Se a base de conhecimento estiver vazia, retornamos a resposta padrão
-    if (!knowledgeBase || knowledgeBase.trim() === "") {
-        return res.status(200).json({ result: "Não foi possível encontrar documentos na base de conhecimento para responder à consulta." });
+    if (!apiKey || !supabaseUrl || !supabaseAnonKey) {
+      throw new Error("Variáveis de ambiente (Gemini ou Supabase) não estão configuradas corretamente na Vercel.");
     }
+    
+    // Inicializa os clientes da IA e do Banco de Dados
+    const genAI = new GoogleGenerativeAI(apiKey);
+    const supabase = createClient(supabaseUrl, supabaseAnonKey);
+    const embeddingModel = genAI.getGenerativeModel({ model: "embedding-001" });
+    const generativeModel = genAI.getGenerativeModel({ model: "gemini-1.5-pro-latest" });
 
-    const promptFinal = `${instrucoesDoGem}\n\n${knowledgeBase}\n\n---CONSULTA DO USUÁRIO:\n${consulta}`;
+    // 1. Criar o embedding (representação numérica) da pergunta do usuário
+    const embeddingResult = await embeddingModel.embedContent({
+      content: consulta,
+      taskType: "RETRIEVAL_QUERY",
+    });
+    const queryEmbedding = embeddingResult.embedding.values;
 
-    const result = await model.generateContent(promptFinal);
+    // 2. Buscar no Supabase pelos trechos de texto mais relevantes
+    const { data: documents, error } = await supabase.rpc('match_documents', {
+      query_embedding: queryEmbedding,
+      match_threshold: 0.75, // Limiar de relevância (pode ajustar entre 0.7 e 0.8)
+      match_count: 7,       // Pega os 7 trechos mais relevantes
+    });
+
+    if (error) {
+      console.error("Erro na busca do Supabase:", error);
+      throw new Error("Falha ao buscar documentos na base de conhecimento.");
+    }
+    
+    const contextText = documents.map(doc => doc.content).join("\n\n---\n\n");
+
+    // 3. Montar o prompt final e gerar a resposta
+    const promptFinal = `
+      ${instrucoesDoGem}
+
+      CONTEXTO RELEVANTE:
+      ${contextText}
+
+      ---
+      CONSULTA DO USUÁRIO:
+      ${consulta}
+    `;
+
+    const result = await generativeModel.generateContent(promptFinal);
     const responseText = result.response.text();
     
     return res.status(200).json({ result: responseText });
